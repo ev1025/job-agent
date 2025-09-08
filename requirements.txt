@@ -1,11 +1,17 @@
-python-dotenv==1.0.1 # 환경 변수 관리
-pandas==2.1.0 # 데이터 처리
-aiomysql==0.2.0 # MySQL 비동기 연동
-httpx==0.25.0 # HTTP 요청
-beautifulsoup4==4.12.2 # HTML 파싱
+# 환경 설정
+python-dotenv==1.0.1
+
+# HTTP 요청 및 웹 크롤링
+httpx==0.25.0
+beautifulsoup4==4.12.2
 lxml==4.9.3
 
-# 이미지 처리 / OCR
+# 데이터베이스 연결
+aiomysql==0.2.0
+
+# 데이터 처리
+pandas==2.1.0
+
+# 이미지 처리 및 OCR
 pillow==10.0.0
 pytesseract==0.3.10
-google-cloud-vision>=3.4.0
