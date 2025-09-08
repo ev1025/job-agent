@@ -26,4 +26,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 사람인 크롤러 실행
-CMD ["python", "-m", "crawler/main"]
+CMD ["python", "-m", "crawler.main"]
