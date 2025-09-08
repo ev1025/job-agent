@@ -21,8 +21,40 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: List files in repository
-        run: ls -lR
+      - name: Debug - Check files and create Dockerfile if missing
+        run: |
+          echo "=== Current directory ==="
+          pwd
+          echo "=== List all files ==="
+          ls -lR
+          echo "=== Look for Dockerfile ==="
+          find . -name "Dockerfile*" -type f
+          echo "=== Check if Dockerfile exists ==="
+          if [ ! -f "Dockerfile" ]; then
+            echo "Dockerfile not found! Creating a basic one..."
+            cat > Dockerfile << 'EOF'
+          FROM python:3.11-slim
+          
+          WORKDIR /app
+          
+          RUN apt-get update && apt-get install -y \
+              gcc \
+              && rm -rf /var/lib/apt/lists/*
+          
+          COPY requirements.txt .
+          RUN pip install --no-cache-dir -r requirements.txt
+          
+          COPY . .
+          
+          EXPOSE 8080
+          
+          CMD ["python", "main.py"]
+          EOF
+            echo "Created basic Dockerfile"
+          else
+            echo "Dockerfile found!"
+            cat Dockerfile
+          fi
 
       - id: 'auth'
         name: 'Authenticate to Google Cloud'
