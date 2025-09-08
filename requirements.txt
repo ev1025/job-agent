@@ -1,6 +1,6 @@
 python-dotenv==1.0.1 # 환경 변수 관리
 pandas==2.1.0 # 데이터 처리
-aiomysql==1.1.0 # MySQL 비동기 연동
+aiomysql==0.2.0 # MySQL 비동기 연동
 httpx==0.25.0 # HTTP 요청
 beautifulsoup4==4.12.2 # HTML 파싱
 lxml==4.9.3
