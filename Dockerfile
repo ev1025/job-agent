@@ -17,6 +17,9 @@ RUN apt-get update && apt-get install -y \
 # Tesseract 설치 확인
 RUN tesseract --version
 
+# numpy 먼저 설치하여 호환성 문제 방지
+RUN pip install --no-cache-dir numpy==1.24.3
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

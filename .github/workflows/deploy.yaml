@@ -79,4 +79,22 @@ jobs:
             --image ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/my-repository/${{ env.JOB_NAME }}:${{ github.sha }} \
             --region ${{ env.GCP_REGION }} \
             --set-env-vars=DB_HOST=${{ secrets.DB_HOST }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }},DB_PORT=${{ secrets.DB_PORT }} \
+            --memory=1Gi \
+            --cpu=1 \
+            --task-timeout=7200 \
+            --max-retries=3 \
+            --parallelism=1 \
             --wait
+
+      - name: Check Job Execution Logs (if failed)
+        if: failure()
+        run: |-
+          echo "Getting latest execution..."
+          EXECUTION_NAME=$(gcloud run jobs executions list --job=${{ env.JOB_NAME }} --region=${{ env.GCP_REGION }} --limit=1 --format="value(metadata.name)")
+          echo "Latest execution: $EXECUTION_NAME"
+          
+          echo "Getting execution logs..."
+          gcloud run jobs executions describe $EXECUTION_NAME --region=${{ env.GCP_REGION }}
+          
+          echo "Getting container logs..."
+          gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=${{ env.JOB_NAME }}" --limit=50 --format="table(timestamp,textPayload)" --freshness=1h
