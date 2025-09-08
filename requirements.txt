@@ -16,3 +16,4 @@ pandas==2.0.3
 # 이미지 처리 및 OCR
 pillow==10.0.0
 pytesseract==0.3.10
+google-cloud-vision
