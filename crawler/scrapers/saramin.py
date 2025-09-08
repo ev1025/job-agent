@@ -72,16 +72,9 @@ async def get_job_detail(client, rec_idx):
         print(f"상세 내용 수집 중 오류: {detail_url}, {e}")
         return f"오류 발생: {e}", None
 
-async def get_job_postings_on_page(client, page, semaphore, search_start_date, existing_rec_idx, search_keyword):
+async def get_job_postings_on_page(client, page, semaphore, search_start_date, existing_rec_idx=None):
     search_url = f"{BASE_URL}/zf_user/search"
-    params = {
-        'search_area': 'main',
-        'page': 1,
-        'recruitPage': page,
-        'recruitSort': 'reg_dt',
-        'recruitPageCount': 100,
-        'searchword': search_keyword # 키워드 추가
-    }
+    params = {'search_area': 'main','page':1,'recruitPage': page,'recruitSort':'reg_dt','recruitPageCount':100,'loc_mcd' : 101000}
     jobs_on_page = []
     should_stop = False
     try:
@@ -173,16 +166,16 @@ async def get_job_postings_on_page(client, page, semaphore, search_start_date, e
         print(f"페이지 {page} 처리 중 오류: {e}")
         return [], True
 
-async def crawl_saramin(search_start_date: datetime, existing_ids: set, total_page_limit: int, search_keyword: str):
-    """사람인 스크레이퍼: 특정 날짜 이후 데이터를 전체 페이지 제한에 맞춰 키워드별로 수집"""
+async def crawl_saramin(search_start_date: datetime, existing_ids: set, total_page_limit: int):
+    """사람인 스크레이퍼: 특정 날짜 이후 데이터를 전체 페이지 제한에 맞춰 수집"""
     all_jobs = []
     semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS_LIMIT)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         page = 1
         while True:
-            print(f"--- 키워드 '{search_keyword}'에 대한 페이지 {page} ---")
-            jobs_from_page, stop_now = await get_job_postings_on_page(client, page, semaphore, search_start_date, existing_ids, search_keyword)
+            print(f"--- 페이지 {page} ---")
+            jobs_from_page, stop_now = await get_job_postings_on_page(client, page, semaphore, search_start_date, existing_ids)
 
             # 중복 제거
             jobs_from_page = [job for job in jobs_from_page if job['rec_idx'] not in existing_ids]
@@ -192,6 +185,7 @@ async def crawl_saramin(search_start_date: datetime, existing_ids: set, total_pa
             if jobs_from_page:
                 all_jobs.extend(jobs_from_page)
             
+            # 페이지 제한 or 종료 조건 확인
             if stop_now or page >= total_page_limit:
                 break
             
