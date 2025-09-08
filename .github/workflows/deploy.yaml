@@ -38,9 +38,9 @@ jobs:
 
       - name: Build and Push Docker Image
         run: |-
-          docker build -f Dockerfile -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/my-repository/${{ env.JOB_NAME }}:${{ github.sha }} .
+          docker build -f ./Dockerfile -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/my-repository/${{ env.JOB_NAME }}:${{ github.sha }} .
           docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/my-repository/${{ env.JOB_NAME }}:${{ github.sha }}
-      
+          
       - name: Deploy Cloud Run Job
         run: |-
           gcloud run jobs deploy ${{ env.JOB_NAME }} \
