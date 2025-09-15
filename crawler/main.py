@@ -1,137 +1,142 @@
 import asyncio
-import pandas as pd
-import aiomysql
 import os
+import json
 from datetime import datetime, timedelta
+
 from dotenv import load_dotenv
+from google.cloud import storage
+import vertexai
+from vertexai import rag
 
-from crawler.scrapers.saramin import crawl_saramin
+from crawler.scrapers.saramin import crawl_saramin # 기존 크롤러 모듈
 
-# --- CONFIGURATION ---
+# --- 1. 전체 설정 ---
 load_dotenv()
 
-SEARCH_START_DATE_STR = (datetime.now() - timedelta(weeks=3)).strftime('%Y-%m-%d')
-BATCH_SIZE = 500  # DB 삽입 배치 단위
-TOTAL_PAGE_LIMIT = 100 # 전체 페이지 제한
-SEARCH_KEYWORDS = ['LLM', '데이터 분석', 'AI','rag', 'agent'] # 검색 키워드 리스트
+# 오늘 날짜를 기반으로 동적 이름 생성
+today_date_str = datetime.now().strftime('%Y-%m-%d')
 
-# --- DATABASE FUNCTIONS ---
-async def save_final_jobs(pool, df: pd.DataFrame):
-    """DataFrame을 job_raw 테이블에 배치 저장"""
-    if df.empty:
+# GCP 및 Vertex AI 설정
+PROJECT_ID = "job-agent-471006"
+LOCATION = "us-east4"
+CORPUS_DISPLAY_NAME = f"job_corpus_{today_date_str}"
+
+# GCS 설정
+GCS_BUCKET_NAME = "job-agent-raw-json"
+GCS_DESTINATION_FOLDER = "rag-source-data"
+GCS_FILENAME_PREFIX = f"job_{today_date_str}"
+GCS_URI_FOR_RAG = f"gs://{GCS_BUCKET_NAME}/{GCS_DESTINATION_FOLDER}/"
+
+# 크롤링 및 배치 설정
+BATCH_SIZE = 500
+TOTAL_PAGE_LIMIT = 1
+SEARCH_KEYWORDS = ['청소']
+# <<-- 이 부분이 누락되었습니다. 여기에 다시 추가했습니다.
+SEARCH_START_DATE_STR = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+
+
+# --- 2. GCS 업로드 헬퍼 함수 ---
+
+def upload_batch_to_gcs(jobs_batch: list, file_index: int, bucket):
+    """채용 공고 배치(list)를 GCS에 part 파일로 업로드합니다."""
+    if not jobs_batch:
         return
-        
-    sql = """
-        INSERT INTO job_raw (
-            platform, title, company, description, location, experience,
-            employment_type, posted_date, deadline_date, crawled_at, link, rec_idx
-        ) 
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) AS new
-        ON DUPLICATE KEY UPDATE crawled_at = new.crawled_at
-    """
-    df = df.where(pd.notnull(df), None)
-    df = df[['platform', 'title', 'company', 'description', 'location', 
-             'experience', 'employment_type', 'posted_date', 'deadline_date',
-             'crawled_at', 'link', 'rec_idx']]
-    data = df.to_records(index=False).tolist()
 
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            try:
-                await cur.executemany(sql, data)
-                await conn.commit()
-                print(f"✅ {len(df)}개의 데이터를 job_raw에 저장 완료")
-            except Exception as e:
-                print(f"🚨 DB 저장 중 오류 발생: {e}")
-                await conn.rollback()
+    gcs_blob_name = f"{GCS_DESTINATION_FOLDER}/{GCS_FILENAME_PREFIX}_part_{file_index}.jsonl"
+    blob = bucket.blob(gcs_blob_name)
 
-async def get_existing_rec_idx(pool):
-    """DB에서 기존 rec_idx 조회"""
-    existing = set()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("SELECT rec_idx FROM job_raw WHERE platform = 0") # 사람인(0) 공고만
-            rows = await cur.fetchall()
-            for row in rows:
-                if row[0]: existing.add(str(row[0]))
-    print(f"✅ DB에서 {len(existing)}개의 기존 사람인 rec_idx를 불러왔습니다.")
-    return existing
+    jsonl_records = []
+    for job in jobs_batch:
+        content = job.get('제목', '') + "\n\n" + job.get('상세내용', '')
+        metadata = {k: v for k, v in job.items() if k not in ['rec_idx', '제목', '상세내용']}
+        json_record = {
+            "id": str(job.get('rec_idx')),
+            "structData": metadata,
+            "content": content
+        }
+        jsonl_records.append(json.dumps(json_record, ensure_ascii=False))
 
-async def delete_expired_jobs(pool):
-    """마감일이 지난 채용 공고와 등록일이 30일 이상 지난 채용 공고를 DB에서 삭제"""
-    today_date = datetime.now()
-    cutoff_date = (today_date - timedelta(days=30)).strftime('%Y-%m-%d')
-    today_str_for_sql = today_date.strftime('%Y-%m-%d')
+    final_jsonl_content = "\n".join(jsonl_records)
 
-    sql = """
-        DELETE FROM job_raw
-        WHERE 
-            STR_TO_DATE(posted_date, '%%Y-%%m-%%d') < %s
-            OR 
-            (
-                deadline_date REGEXP '^[0-9]{4}/[0-9]{2}/[0-9]{2}$' AND
-                STR_TO_DATE(REPLACE(deadline_date, '/', '-'), '%%Y-%%m-%%d') < %s
-            )
-    """
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(sql, (cutoff_date, today_str_for_sql))
-            deleted_count = cur.rowcount
-            await conn.commit()
-    print(f"✅ {deleted_count}개의 만료된 채용 공고를 삭제 완료")
+    try:
+        blob.upload_from_string(final_jsonl_content, content_type="application/jsonl")
+        print(f"✅ {len(jobs_batch)}개 공고를 {gcs_blob_name} 파일로 GCS에 업로드 완료.")
+    except Exception as e:
+        print(f"🚨 GCS 업로드 중 오류 발생 (파일: {gcs_blob_name}): {e}")
+
+# --- 3. RAG Engine 로드 헬퍼 함수 ---
+
+def ingest_gcs_files_to_rag(gcs_uri: str):
+    """지정된 GCS 경로의 모든 파일을 RAG Engine으로 가져옵니다."""
+    print("\n--- 2단계: RAG Engine으로 데이터 가져오기 시작 ---")
     
-# --- MAIN EXECUTION ---
+    vertexai.init(project=PROJECT_ID, location=LOCATION)
+    
+    corpora = rag.list_corpora()
+    corpus = next((c for c in corpora if c.display_name == CORPUS_DISPLAY_NAME), None)
+    
+    if not corpus:
+        print(f"'{CORPUS_DISPLAY_NAME}' 코퍼스를 새로 생성합니다.")
+        corpus = rag.create_corpus(display_name=CORPUS_DISPLAY_NAME)
+    else:
+        print(f"기존 코퍼스 '{CORPUS_DISPLAY_NAME}'를 사용합니다.")
+
+    print(f"'{gcs_uri}' 경로의 파일들을 RAG Engine으로 가져옵니다.")
+    try:
+        rag.import_files(
+            corpus.name,
+            [gcs_uri],
+        )
+        print("✅ Storage -> VectorDB 임포트 작업이 성공적으로 시작되었습니다.")
+        print("   (실제 인덱싱 완료까지는 데이터 양에 따라 시간이 소요될 수 있습니다)")
+    except Exception as e:
+        print(f"❗ RAG Engine 임포트 중 오류 발생: {e}")
+
+
+# --- 4. 메인 실행 함수 ---
+
 async def main():
+    """크롤링, GCS 업로드, RAG Engine 임포트를 순차적으로 실행합니다."""
     start_time = datetime.now()
-    pool = await aiomysql.create_pool(
-        host=os.getenv("DB_HOST"), port=int(os.getenv("DB_PORT")),
-        user=os.getenv("DB_USER"), password=os.getenv("DB_PASSWORD"),
-        db=os.getenv("DB_NAME", "jobdb"), autocommit=False
-    )
 
-    sql_cols = {
-        '플랫폼': 'platform', '제목': 'title', '회사명': 'company', '상세내용': 'description',
-        '지역': 'location', '경력': 'experience', '고용형태': 'employment_type',
-        '등록일': 'posted_date', '마감일': 'deadline_date',
-        '크롤링 시간': 'crawled_at', '상세링크': 'link', 'rec_idx': 'rec_idx'
-    }
-
-    await delete_expired_jobs(pool)
-    existing_ids = await get_existing_rec_idx(pool)
-
-    all_jobs_buffer = []
-    total_new_jobs_count = 0
+    # 1단계: 크롤링 및 GCS 배치 업로드
+    print(f"--- 1단계: 크롤링 및 GCS 배치 업로드 시작 (파일명 접두사: {GCS_FILENAME_PREFIX}) ---")
+    storage_client = storage.Client(project=PROJECT_ID)
+    bucket = storage_client.bucket(GCS_BUCKET_NAME)
     
-    search_start_date = datetime.strptime(SEARCH_START_DATE_STR, "%Y-%m-%d")
-    print(f"--- {search_start_date.strftime('%Y-%m-%d')} 이후 채용 공고 수집 시작 ---")
+    all_jobs_buffer = []
+    total_jobs_uploaded = 0
+    file_index = 1
+    
+    # 여기서 사용할 시작 날짜 객체를 미리 생성합니다.
+    start_date_obj = datetime.strptime(SEARCH_START_DATE_STR, "%Y-%m-%d")
 
     for keyword in SEARCH_KEYWORDS:
-        print(f"\n--- 키워드: '{keyword}' 크롤링 시작 ---")
-        
-        async for jobs_from_page in crawl_saramin(search_start_date, existing_ids, TOTAL_PAGE_LIMIT, keyword):
+        print(f"\n> 키워드: '{keyword}' 크롤링 중...")
+        async for jobs_from_page in crawl_saramin(start_date_obj, set(), TOTAL_PAGE_LIMIT, keyword):
             all_jobs_buffer.extend(jobs_from_page)
             
             if len(all_jobs_buffer) >= BATCH_SIZE:
-                batch_to_save = all_jobs_buffer[:BATCH_SIZE]
+                batch_to_upload = all_jobs_buffer[:BATCH_SIZE]
                 all_jobs_buffer = all_jobs_buffer[BATCH_SIZE:]
 
-                df = pd.DataFrame(batch_to_save)
-                df.rename(columns=sql_cols, inplace=True)
-                df['platform'] = 0 # 사람인 플랫폼 번호
-                await save_final_jobs(pool, df)
-                total_new_jobs_count += len(batch_to_save)
+                upload_batch_to_gcs(batch_to_upload, file_index, bucket)
+                
+                total_jobs_uploaded += len(batch_to_upload)
+                file_index += 1
 
     if all_jobs_buffer:
-        df = pd.DataFrame(all_jobs_buffer)
-        df.rename(columns=sql_cols, inplace=True)
-        df['platform'] = 0
-        await save_final_jobs(pool, df)
-        total_new_jobs_count += len(all_jobs_buffer)
-
-    print(f"\n총 {total_new_jobs_count}개의 새로운 데이터를 수집 및 저장 완료.")
+        upload_batch_to_gcs(all_jobs_buffer, file_index, bucket)
+        total_jobs_uploaded += len(all_jobs_buffer)
     
-    pool.close()
-    await pool.wait_closed()
+    print(f"\n--- 1단계 완료: 총 {total_jobs_uploaded}개 공고를 GCS에 저장했습니다. ---")
+
+    if total_jobs_uploaded > 0:
+        await asyncio.to_thread(ingest_gcs_files_to_rag, GCS_URI_FOR_RAG)
+    else:
+        print("\n--- 업로드된 데이터가 없어 RAG Engine 임포트를 건너뜁니다. ---")
+
+    print(f"\n--- 모든 작업 완료 ---")
     print(f"총 소요 시간: {datetime.now() - start_time}")
 
 if __name__ == "__main__":
