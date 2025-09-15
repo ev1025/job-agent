@@ -1,26 +1,15 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from google.cloud import storage
-from google.genai import types
-
 import vertexai
 from vertexai.preview import rag
 from vertexai.generative_models import GenerativeModel, Tool
-from datetime import datetime
 
+from datetime import datetime
 import json
 import os
-import uvicorn
 
-# Pydantic 모델 정의 (JSON 페이로드를 받기 위해)
-class QuestionRequest(BaseModel):
-    question: str
-
-# FastAPI 앱 생성
-app = FastAPI()
-
+# --- 전역 변수 설정 (API 키, 프로젝트 ID 등) ---
+# RAG할 때 서비스계정에 검색 엔진 관리자 권한 꼭 필요
 PROJECT_ID = "job-agent-471006"
-LOCATION = "us-east4"  # RAG corpus가 있는 지역과 일치
+LOCATION = "us-east4"
 CORPUS_NAME = f"projects/{PROJECT_ID}/locations/{LOCATION}/ragCorpora/3458764513820540928"
 MODEL_ID = "gemini-2.0-flash-001"
 similarity_top_k = 10
@@ -48,9 +37,11 @@ RAG 시스템을 통해 검색된 채용 공고 문서들을 바탕으로 아래
 - **[회사명]:** [추천 이유 설명]
 """
 
+# --- 로컬 초기화 함수 ---
 def vertex_init(PROJECT_ID=PROJECT_ID, LOCATION=LOCATION):
     vertexai.init(project=PROJECT_ID, location=LOCATION)
 
+# --- 쿼리 재구성 함수 ---
 def query_rebuilder(question: str, MODEL_ID=MODEL_ID):
     parsing_prompt = f"""
     당신은 채용 공고 검색 시스템의 쿼리 분석 전문가입니다.
@@ -98,7 +89,7 @@ def query_rebuilder(question: str, MODEL_ID=MODEL_ID):
     )
     
     response = client.generate_content(contents=question)
-
+    
     structured_query_str = response.text.strip().replace("```json", "").replace("```", "")
     structured_query = json.loads(structured_query_str)
     
@@ -107,7 +98,7 @@ def query_rebuilder(question: str, MODEL_ID=MODEL_ID):
     
     return search_keywords + final_filter_string
 
-
+# --- RAG 모델 호출 및 재랭킹 함수 ---
 def rerank_model(question: str, CORPUS_NAME=CORPUS_NAME, MODEL_ID=MODEL_ID,
                  similarity_top_k=similarity_top_k, system_prompt=system_prompt):
     vertex_init()
@@ -124,9 +115,7 @@ def rerank_model(question: str, CORPUS_NAME=CORPUS_NAME, MODEL_ID=MODEL_ID,
         retrieval=rag.Retrieval(
             source=rag.VertexRagStore(
                 rag_resources=[
-                    rag.RagResource(
-                        rag_corpus=CORPUS_NAME,
-                    )
+                    rag.RagResource(rag_corpus=CORPUS_NAME)
                 ],
                 rag_retrieval_config=config
             ),
@@ -144,38 +133,3 @@ def rerank_model(question: str, CORPUS_NAME=CORPUS_NAME, MODEL_ID=MODEL_ID,
     response = chat.send_message(pre_question)
     
     return response
-
-# --- FastAPI 엔드포인트 추가 ---
-@app.get("/")
-def health_check():
-    """상태 확인을 위한 엔드포인트"""
-    return {"status": "healthy"}
-
-@app.post("/ask")
-def ask_question(request: dict):
-    # dict에서 바로 값 꺼내기
-    question = request.get("question")
-    result = query_rebuilder(question)
-
-    return result
-    
-    # # RAG 모델 호출
-    # result = rerank_model(question)
-
-    # return {"answer": result.text}
-    # try:
-    #     print(request.question)
-    #     response = rerank_model(request.question)
-    #     print(response)
-        
-    #     # 모델의 text 값을 추출하여 JSON 객체에 담아 반환
-    #     assistant_response = response.text
-    #     return {"answer": assistant_response}
-        
-    # except Exception as e:
-    #     # 오류 발생 시 500 Internal Server Error 반환
-    #     raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run("rag_main:app", host="0.0.0.0", port=port, reload=False)

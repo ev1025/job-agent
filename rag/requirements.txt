@@ -1,5 +1,4 @@
 fastapi
 uvicorn[standard]
-google-cloud-aiplatform
-google-cloud-storage
-google-generativeai
+google-cloud-aiplatform>=1.64.0
+google-generativeai>=0.6.0
