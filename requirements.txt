@@ -17,3 +17,16 @@ pandas==2.0.3
 pillow==10.0.0
 pytesseract==0.3.10
 google-cloud-vision
+
+# --- GCP Libraries ---
+google-cloud-storage
+google-cloud-aiplatform
+google-cloud-vision
+
+# --- Web & API ---
+fastapi
+uvicorn
+streamlit
+requests
+
+pydantic
